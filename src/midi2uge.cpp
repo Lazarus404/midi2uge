@@ -10,6 +10,7 @@
 #include <optional>
 
 constexpr int TICKS_PER_ROW = 6; // Set to 6 to match hUGETracker default
+// QUESTION: Is 6 always the best default for TICKS_PER_ROW, or should this be user-configurable?
 constexpr int UGE_EMPTY_NOTE = 90;
 
 // Helper to zero-initialize all fields of an instrument
@@ -88,6 +89,7 @@ bool convertMidiToUge(const std::string& midiPath, const std::string& ugePath, s
 
     UgeSongHeader header{};
     header.version = 6;
+    // QUESTION: Is version 6 always correct for all UGE files, or should this be checked against the input or user-specified?
     header.name = make_shortstring("");
     header.artist = make_shortstring("");
     header.comment = make_shortstring("");
@@ -119,10 +121,11 @@ bool convertMidiToUge(const std::string& midiPath, const std::string& ugePath, s
     // --- Tempo handling ---
     // --- Extract MIDI tempo and set UGE timer fields ---
     int midi_tempo_us_per_qn = 500000; // default 120 BPM
+    // QUESTION: Is 500000 (120 BPM) the best default if no tempo is found, or should we warn the user?
     for (int t = 0; t < midi.getTrackCount(); ++t) {
         for (int i = 0; i < midi[t].size(); ++i) {
             const auto& ev = midi[t][i];
-            if (ev.isMeta() && ev.getMetaType() == 0x51) {
+        if (ev.isMeta() && ev.getMetaType() == 0x51) {
                 midi_tempo_us_per_qn = (ev[3] << 16) | (ev[4] << 8) | ev[5];
                 goto found_tempo;
             }
@@ -132,6 +135,7 @@ found_tempo:
     // --- User-configurable rows per quarter note ---
     int user_rows_per_qn = 4; // You can change this value for different musical feels
     int ticks_per_row = std::max(1, std::min(tpq / user_rows_per_qn, 16)); // Clamp to max 16
+    // QUESTION: Why clamp ticks_per_row to 16? Is this a hUGETracker limit or just a safe default?
     int timer_enabled = 1;
     int timer_divider = 0;
     double rows_per_qn = static_cast<double>(tpq) / ticks_per_row;
@@ -140,6 +144,7 @@ found_tempo:
     bool divider_clamped = false;
     if (timer_divider < 1) { timer_divider = 1; divider_clamped = true; }
     if (timer_divider > 255) { timer_divider = 255; divider_clamped = true; }
+    // QUESTION: Are 1 and 255 the true hardware/driver limits for timer_divider, or just what hUGETracker expects?
     header.ticks_per_row = ticks_per_row;
     header.timer_enabled = timer_enabled;
     header.timer_divider = timer_divider;
@@ -242,77 +247,77 @@ found_tempo:
             if (channel != mapped_midi_ch) continue;
             // --- Begin original note-on/note-off/instrument/velocity logic ---
             if (uge_ch == 3) { // Noise
-                if (ev.isNoteOn() && ev.getVelocity() > 0) {
-                    int note = ev.getKeyNumber();
-                    int velocity = ev.getVelocity();
-                    if (percussionNoteToUgeInst.count(note) == 0 && nextNoiseInst < UGE_NUM_NOISE) {
-                        percussionNoteToUgeInst[note] = nextNoiseInst++;
-                    }
-                    int ugeInst = percussionNoteToUgeInst.count(note) ? percussionNoteToUgeInst[note] : 0;
-                    // For percussion, treat as one-row hit (clear on next row)
+            if (ev.isNoteOn() && ev.getVelocity() > 0) {
+                int note = ev.getKeyNumber();
+                int velocity = ev.getVelocity();
+                if (percussionNoteToUgeInst.count(note) == 0 && nextNoiseInst < UGE_NUM_NOISE) {
+                    percussionNoteToUgeInst[note] = nextNoiseInst++;
+                }
+                int ugeInst = percussionNoteToUgeInst.count(note) ? percussionNoteToUgeInst[note] : 0;
+                // For percussion, treat as one-row hit (clear on next row)
                     channel_notes[uge_ch][row] = note;
                     channel_instruments[uge_ch][row] = ugeInst;
                     channel_velocities[uge_ch][row] = velocity;
-                    if (percMaxVelocity[note] < velocity) percMaxVelocity[note] = velocity;
-                    if (row + 1 < total_rows) {
+                if (percMaxVelocity[note] < velocity) percMaxVelocity[note] = velocity;
+                if (row + 1 < total_rows) {
                         channel_notes[uge_ch][row + 1] = UGE_EMPTY_NOTE;
                         channel_instruments[uge_ch][row + 1] = 0;
                         channel_velocities[uge_ch][row + 1] = 0;
-                    }
                 }
+            }
             } else { // Melodic
-                if (ev.isTimbre()) {
-                    int prog = ev.getP1();
-                    channelProgram[channel] = prog;
+            if (ev.isTimbre()) {
+                int prog = ev.getP1();
+                channelProgram[channel] = prog;
                     if (uge_ch == 2) { // Wave
-                        if (midiProgToUgeWaveInst.count(prog) == 0 && nextUgeWaveInst < UGE_NUM_WAVE) {
-                            midiProgToUgeWaveInst[prog] = nextUgeWaveInst++;
+                if (midiProgToUgeWaveInst.count(prog) == 0 && nextUgeWaveInst < UGE_NUM_WAVE) {
+                    midiProgToUgeWaveInst[prog] = nextUgeWaveInst++;
                         }
                     } else { // Duty
                         if (midiProgToUgeInst.count(prog) == 0 && nextUgeInst < UGE_NUM_DUTY) {
                             midiProgToUgeInst[prog] = nextUgeInst++;
                         }
-                    }
-                } else if (ev.isNoteOn() && ev.getVelocity() > 0) {
-                    int note = ev.getKeyNumber();
-                    int velocity = ev.getVelocity();
-                    int prog = channelProgram[channel];
+                }
+            } else if (ev.isNoteOn() && ev.getVelocity() > 0) {
+                int note = ev.getKeyNumber();
+                int velocity = ev.getVelocity();
+                int prog = channelProgram[channel];
                     int ugeInst = 0;
                     if (uge_ch == 2) { // Wave
-                        if (midiProgToUgeWaveInst.count(prog) == 0 && nextUgeWaveInst < UGE_NUM_WAVE) {
-                            midiProgToUgeWaveInst[prog] = nextUgeWaveInst++;
-                        }
+                if (midiProgToUgeWaveInst.count(prog) == 0 && nextUgeWaveInst < UGE_NUM_WAVE) {
+                    midiProgToUgeWaveInst[prog] = nextUgeWaveInst++;
+                }
                         ugeInst = midiProgToUgeWaveInst.count(prog) ? midiProgToUgeWaveInst[prog] : 0;
-                        if (waveProgMaxVelocity[prog] < velocity) waveProgMaxVelocity[prog] = velocity;
+                if (waveProgMaxVelocity[prog] < velocity) waveProgMaxVelocity[prog] = velocity;
                     } else { // Duty
-                        if (midiProgToUgeInst.count(prog) == 0 && nextUgeInst < UGE_NUM_DUTY) {
-                            midiProgToUgeInst[prog] = nextUgeInst++;
-                        }
+                if (midiProgToUgeInst.count(prog) == 0 && nextUgeInst < UGE_NUM_DUTY) {
+                    midiProgToUgeInst[prog] = nextUgeInst++;
+                }
                         ugeInst = midiProgToUgeInst.count(prog) ? midiProgToUgeInst[prog] : 0;
                         if (progMaxVelocity[prog] < velocity) progMaxVelocity[prog] = velocity;
                     }
-                    // Record note start
+                // Record note start
                     active_notes[uge_ch][note] = std::make_tuple(row, ugeInst, velocity);
-                } else if (ev.isNoteOff() || (ev.isNoteOn() && ev.getVelocity() == 0)) {
-                    int note = ev.getKeyNumber();
+            } else if (ev.isNoteOff() || (ev.isNoteOn() && ev.getVelocity() == 0)) {
+                int note = ev.getKeyNumber();
                     auto it = active_notes[uge_ch].find(note);
                     if (it != active_notes[uge_ch].end()) {
-                        int start_row = std::get<0>(it->second);
-                        int ugeInst = std::get<1>(it->second);
-                        int velocity = std::get<2>(it->second);
-                        int off_row = row;
-                        // Fill all rows from start_row to off_row-1
-                        for (int r = start_row; r < off_row && r < total_rows; ++r) {
+                    int start_row = std::get<0>(it->second);
+                    int ugeInst = std::get<1>(it->second);
+                    int velocity = std::get<2>(it->second);
+                    int off_row = row;
+                    // Fill all rows from start_row to off_row-1
+                    for (int r = start_row; r < off_row && r < total_rows; ++r) {
                             channel_notes[uge_ch][r] = note;
                             channel_instruments[uge_ch][r] = ugeInst;
                             channel_velocities[uge_ch][r] = velocity;
-                        }
-                        // Clear the note at the off_row
-                        if (off_row < total_rows) {
+                    }
+                    // Clear the note at the off_row
+                    if (off_row < total_rows) {
                             channel_notes[uge_ch][off_row] = UGE_EMPTY_NOTE;
                             channel_instruments[uge_ch][off_row] = 0;
                             channel_velocities[uge_ch][off_row] = 0;
-                        }
+                    }
                         active_notes[uge_ch].erase(it);
                     }
                 }
@@ -601,7 +606,8 @@ found_first:;
 
     // --- Automatic truncation to fit UGE/hUGETracker limits ---
     constexpr int MAX_PATTERNS_PER_CHANNEL = 256;
-    constexpr int MAX_PATTERN_DATA_BYTES = 0x4000;
+    constexpr int MAX_PATTERN_DATA_BYTES = 0x4000; // 16KB
+    // QUESTION: Are these limits (256 patterns, 16KB) strictly enforced by hUGETracker, or can they be relaxed for custom tools?
     int max_patterns = num_patterns;
     // Truncate by pattern count if needed
     if (num_patterns > MAX_PATTERNS_PER_CHANNEL) {
@@ -643,7 +649,7 @@ found_first:;
             int pat_idx;
             if (it != pattern_hash_to_index[ch].end()) {
                 pat_idx = it->second; // Reuse existing pattern
-            } else {
+                    } else {
                 UgePattern p{};
                 p.index = new_pattern_idx;
                 for (int row = 0; row < UGE_PATTERN_ROWS; ++row) {
@@ -653,8 +659,8 @@ found_first:;
                     p.rows[row].unused1 = 0;
                     p.rows[row].effect = 0;
                     p.rows[row].effect_param = 0;
-                }
-                patterns.push_back(p);
+            }
+            patterns.push_back(p);
                 pat_idx = new_pattern_idx;
                 pattern_hash_to_index[ch][hash] = new_pattern_idx;
                 ++new_pattern_idx;

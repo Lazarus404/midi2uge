@@ -60,6 +60,7 @@ bool writeUgeFile(
         write_le(out, uint32_t(0)); // length
         write_le(out, uint8_t(0)); // length_enabled
         write_le(out, uint8_t(15)); // initial_volume
+        // QUESTION: Is 15 the best default for initial_volume, or should this be instrument-specific?
         write_le(out, uint32_t(0)); // volume_sweep_direction
         write_le(out, uint8_t(0)); // volume_sweep_amount
         write_le(out, uint32_t(0)); // frequency_sweep_time
@@ -71,8 +72,10 @@ bool writeUgeFile(
         write_le(out, uint32_t(0)); // noise_counter_step
         write_le(out, uint8_t(0)); // subpattern_enabled
         // Always write the full subpattern block (64 x 17 bytes)
+        // QUESTION: Is 64 always the correct number of rows for every pattern/instrument? Is this a UGE v6 spec?
         for (int i = 0; i < 64; ++i) {
             write_le(out, uint32_t(90)); // note
+            // QUESTION: Is 90 always the correct value for unused note rows?
             write_le(out, uint32_t(0));  // unused
             write_le(out, uint32_t(0));  // jump
             write_le(out, uint32_t(0));  // effectcode
@@ -166,10 +169,12 @@ bool writeUgeFile(
     for (int ch = 0; ch < UGE_NUM_CHANNELS; ++ch) {
         uint32_t len = orders[ch].size();
         write_le(out, len + 1); // off-by-one bug: write length+1
+        // QUESTION: Why does the order matrix length field require +1? Is this a quirk of hUGETracker?
         for (uint32_t i = 0; i < len; ++i) {
             write_le(out, orders[ch][i]);
         }
         write_le(out, uint32_t(0)); // off-by-one bug filler
+        // QUESTION: Is this final zero always required, even if not referenced?
     }
     logSection("routines");
     // Write routines section from input
@@ -184,6 +189,7 @@ bool writeUgeFile(
     // Pad file to 81254 bytes (reference length)
     std::streampos final_size = out.tellp();
     const size_t REF_SIZE = 81254;
+    // QUESTION: Is 81254 bytes the canonical file size for minimal UGE files, or should this be dynamically determined?
     if (final_size < REF_SIZE) {
         std::vector<char> padding(REF_SIZE - final_size, 0);
         out.write(padding.data(), padding.size());
