@@ -1,0 +1,11 @@
+/build
+
+*.pas
+*.mid
+*.uge
+*.json
+*.log
+*.log.*
+*.log.*.*
+*.log.*.*.*
+*.log.*.*.*.*
