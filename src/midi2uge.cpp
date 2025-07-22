@@ -8,6 +8,7 @@
 #include <vector>
 #include <unordered_map>
 #include <optional>
+#include <set>
 
 constexpr int TICKS_PER_ROW = 6; // Set to 6 to match hUGETracker default
 // QUESTION: Is 6 always the best default for TICKS_PER_ROW, or should this be user-configurable?
@@ -69,6 +70,10 @@ static void init_noise_instrument(UgeNoiseInstrument& inst, const std::string& n
     inst.noise_mode = noise_mode; // 0 = 15-bit
     inst.subpattern_enabled = 0;
 }
+
+// Helper clamp function (C++11 compatible)
+template<typename T>
+T clamp(T v, T lo, T hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 bool convertMidiToUge(const std::string& midiPath, const std::string& ugePath, std::optional<std::array<int, 4>> user_channel_map) {
     smf::MidiFile midi;
@@ -232,6 +237,19 @@ found_tempo:
             channel_velocities[ch][row] = 0;
         }
     }
+    // --- Effect tracking: pitch bend and modulation ---
+    std::array<int, 16> last_pitch_bend = {0}; // -8192 to +8191
+    std::array<int, 16> last_modulation = {0}; // 0 to 127
+    std::array<int, 16> last_volume = {127}; // 0 to 127, default max
+    std::array<std::vector<uint8_t>, UGE_NUM_CHANNELS> channel_effect;
+    std::array<std::vector<uint8_t>, UGE_NUM_CHANNELS> channel_effect_param;
+    for (int ch = 0; ch < UGE_NUM_CHANNELS; ++ch) {
+        channel_effect[ch].resize(total_rows, 0);
+        channel_effect_param[ch].resize(total_rows, 0);
+    }
+    // --- Sustain pedal (CC64) tracking ---
+    std::array<bool, 16> sustain_on = {false};
+    std::array<std::set<int>, 16> pending_release_notes;
     // Only process events for mapped channels
     for (int i = 0; i < midi[0].size(); ++i) {
         const auto& ev = midi[0][i];
@@ -240,6 +258,85 @@ found_tempo:
         if (row >= total_rows) continue;
         int channel = ev.getChannel();
         if (channel < 0 || channel > 15) continue;
+        // Handle sustain pedal (CC64)
+        if (ev.isController() && ev.getP1() == 64) {
+            int value = ev.getP2();
+            if (value >= 64) {
+                sustain_on[channel] = true;
+            } else {
+                sustain_on[channel] = false;
+                // Release all pending notes for this channel
+                for (int note : pending_release_notes[channel]) {
+                    for (int uge_ch = 0; uge_ch < UGE_NUM_CHANNELS; ++uge_ch) {
+                        if (midi_to_uge[uge_ch] == channel) {
+                            auto it = active_notes[uge_ch].find(note);
+                            if (it != active_notes[uge_ch].end()) {
+                                int start_row = std::get<0>(it->second);
+                                int ugeInst = std::get<1>(it->second);
+                                int velocity = std::get<2>(it->second);
+                                int off_row = row;
+                                for (int r = start_row; r < off_row && r < total_rows; ++r) {
+                                    channel_notes[uge_ch][r] = note;
+                                    channel_instruments[uge_ch][r] = ugeInst;
+                                    channel_velocities[uge_ch][r] = velocity;
+                                }
+                                if (off_row < total_rows) {
+                                    channel_notes[uge_ch][off_row] = UGE_EMPTY_NOTE;
+                                    channel_instruments[uge_ch][off_row] = 0;
+                                    channel_velocities[uge_ch][off_row] = 0;
+                                }
+                                active_notes[uge_ch].erase(it);
+                            }
+                        }
+                    }
+                }
+                pending_release_notes[channel].clear();
+            }
+        }
+        // Handle pitch bend
+        if ((ev[0] & 0xF0) == 0xE0) { // Pitch bend event
+            int lsb = ev[1];
+            int msb = ev[2];
+            int value = ((msb << 7) | lsb) - 8192; // -8192..+8191
+            last_pitch_bend[channel] = value;
+            int uge_param = clamp((value + 8192) * 15 / 16383, 0, 15);
+            for (int uge_ch = 0; uge_ch < UGE_NUM_CHANNELS; ++uge_ch) {
+                if (midi_to_uge[uge_ch] == channel) {
+                    channel_effect[uge_ch][row] = 1; // UGE effect 1: portamento
+                    channel_effect_param[uge_ch][row] = uge_param;
+                }
+            }
+        }
+        // Handle modulation wheel (CC1)
+        if (ev.isController() && ev.getP1() == 1) {
+            int value = ev.getP2(); // 0..127
+            last_modulation[channel] = value;
+            int uge_param = clamp(value * 15 / 127, 0, 15);
+            for (int uge_ch = 0; uge_ch < UGE_NUM_CHANNELS; ++uge_ch) {
+                if (midi_to_uge[uge_ch] == channel) {
+                    // Only set vibrato if no other effect is set for this row (e.g., pitch bend takes priority)
+                    if (channel_effect[uge_ch][row] == 0) {
+                        channel_effect[uge_ch][row] = 4; // UGE effect 4: vibrato
+                        channel_effect_param[uge_ch][row] = uge_param;
+                    }
+                }
+            }
+        }
+        // Handle volume (CC7)
+        if (ev.isController() && ev.getP1() == 7) {
+            int value = ev.getP2(); // 0..127
+            last_volume[channel] = value;
+            int uge_param = clamp(value * 15 / 127, 0, 15);
+            for (int uge_ch = 0; uge_ch < UGE_NUM_CHANNELS; ++uge_ch) {
+                if (midi_to_uge[uge_ch] == channel) {
+                    // Only set volume if no higher-priority effect is set for this row
+                    if (channel_effect[uge_ch][row] == 0) {
+                        channel_effect[uge_ch][row] = 0xC; // UGE effect C: volume slide
+                        channel_effect_param[uge_ch][row] = uge_param;
+                    }
+                }
+            }
+        }
         // For each UGE channel, check if this MIDI channel is mapped
         for (int uge_ch = 0; uge_ch < UGE_NUM_CHANNELS; ++uge_ch) {
             int mapped_midi_ch = midi_to_uge[uge_ch];
@@ -344,10 +441,14 @@ found_tempo:
     std::array<std::vector<uint8_t>, UGE_NUM_CHANNELS> uge_notes;
     std::array<std::vector<int>, UGE_NUM_CHANNELS> uge_instruments;
     std::array<std::vector<uint8_t>, UGE_NUM_CHANNELS> uge_velocities;
+    std::array<std::vector<uint8_t>, UGE_NUM_CHANNELS> uge_effects;
+    std::array<std::vector<uint8_t>, UGE_NUM_CHANNELS> uge_effect_params;
     for (int ch = 0; ch < UGE_NUM_CHANNELS; ++ch) {
         uge_notes[ch].resize(total_rows, UGE_EMPTY_NOTE);
         uge_instruments[ch].resize(total_rows, 0);
         uge_velocities[ch].resize(total_rows, 0);
+        uge_effects[ch].resize(total_rows, 0);
+        uge_effect_params[ch].resize(total_rows, 0);
     }
     // --- Strict channel mapping and debug output ---
     // For each row, assign MIDI channel 0 to UGE 0, 1 to 1, 2 to 2
@@ -637,8 +738,8 @@ found_first:;
                 int song_row = pat * UGE_PATTERN_ROWS + row;
                 uint8_t note = (song_row < total_rows) ? uge_notes[ch][song_row] : UGE_EMPTY_NOTE;
                 uint8_t inst = (song_row < total_rows) ? uge_instruments[ch][song_row] : 0;
-                uint8_t eff = 0;
-                uint8_t eff_param = 0;
+                uint8_t eff = (song_row < total_rows) ? uge_effects[ch][song_row] : 0;
+                uint8_t eff_param = (song_row < total_rows) ? uge_effect_params[ch][song_row] : 0;
                 pat_data.push_back(note);
                 pat_data.push_back(inst);
                 pat_data.push_back(eff);
@@ -656,9 +757,9 @@ found_first:;
                     int song_row = pat * UGE_PATTERN_ROWS + row;
                     p.rows[row].note = (song_row < total_rows) ? uge_notes[ch][song_row] : UGE_EMPTY_NOTE;
                     p.rows[row].instrument = (song_row < total_rows) ? uge_instruments[ch][song_row] : 0;
+                    p.rows[row].effect = (song_row < total_rows) ? uge_effects[ch][song_row] : 0;
+                    p.rows[row].effect_param = (song_row < total_rows) ? uge_effect_params[ch][song_row] : 0;
                     p.rows[row].unused1 = 0;
-                    p.rows[row].effect = 0;
-                    p.rows[row].effect_param = 0;
             }
             patterns.push_back(p);
                 pat_idx = new_pattern_idx;
