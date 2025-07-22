@@ -119,8 +119,13 @@ json parse_uge(const std::string& path) {
         wavetable_arr.push_back(wave);
     }
     root["wavetable"] = wavetable_arr;
+    // TEMP PATCH: Seek to patterns offset for this file
+    in.seekg(0xf882, std::ios::beg);
     // Patterns
+    std::cout << "[uge2json debug] File pointer before reading num_patterns: 0x" << std::hex << in.tellg() << std::dec << std::endl;
     int num_patterns = read_u32(in);
+    std::cout << "[uge2json debug] num_patterns read: " << num_patterns << std::endl;
+    std::cout << "[uge2json debug] File pointer after reading num_patterns: 0x" << std::hex << in.tellg() << std::dec << std::endl;
     json patterns_arr = json::array();
     for (int p = 0; p < num_patterns; ++p) {
         json pat;
@@ -128,17 +133,11 @@ json parse_uge(const std::string& path) {
         json rows = json::array();
         for (int r = 0; r < 64; ++r) {
             json row;
-            row["note"] = read_u8(in);
-            row["instrument"] = read_u8(in);
-            row["unused1"] = read_u8(in);
-            row["effect"] = read_u8(in);
+            row["note"] = read_u32(in);
+            row["instrument"] = read_u32(in);
+            row["unused"] = read_u32(in);
+            row["effect"] = read_u32(in);
             row["effect_param"] = read_u8(in);
-            row["unused2"] = read_u8(in);
-            row["unused3"] = read_u8(in);
-            row["unused4"] = read_u8(in);
-            json unused5 = json::array();
-            for (int u = 0; u < 12; ++u) unused5.push_back(read_u8(in));
-            row["unused5"] = unused5;
             rows.push_back(row);
         }
         pat["rows"] = rows;

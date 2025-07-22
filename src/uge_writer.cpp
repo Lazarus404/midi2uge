@@ -153,6 +153,7 @@ bool writeUgeFile(
     logSection("patterns");
     // Write pattern section from input
     uint32_t num_patterns = patterns.size();
+    std::cout << "[UGE DEBUG] Number of patterns: " << num_patterns << std::endl;
     write_le(out, num_patterns);
     for (const auto& pat : patterns) {
         write_le(out, pat.index);
